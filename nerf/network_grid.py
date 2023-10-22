@@ -4,9 +4,12 @@ import torch.nn.functional as F
 
 from activation import trunc_exp, biased_softplus
 from .renderer import NeRFRenderer
-
+import raymarching
 import numpy as np
 from encoding import get_encoder
+from .volumetric_rendering.renderer import generate_planes, sample_from_planes
+from .volumetric_rendering import math_utils
+from. volumetric_rendering.ray_marcher import MipRayMarcher2
 
 from .utils import safe_normalize
 
@@ -46,9 +49,12 @@ class NeRFNetwork(NeRFRenderer):
         self.num_layers = num_layers
         self.hidden_dim = hidden_dim
 
-        self.encoder, self.in_dim = get_encoder('hashgrid', input_dim=3, log2_hashmap_size=19, desired_resolution=2048 * self.bound, interpolation='smoothstep')
+        # self.encoder, self.in_dim = get_encoder('hashgrid', input_dim=3, log2_hashmap_size=19, desired_resolution=2048 * self.bound, interpolation='smoothstep')
 
-        self.sigma_net = MLP(self.in_dim, 4, hidden_dim, num_layers, bias=True)
+        # self.sigma_net = MLP(self.in_dim, 4, hidden_dim, num_layers, bias=True)
+        self.decoder = OSGDecoder(32, 3).float()
+        self.planes = triplane()
+        self.plane_axes = generate_planes()
         # self.normal_net = MLP(self.in_dim, 3, hidden_dim, num_layers, bias=True)
 
         self.density_activation = trunc_exp if self.opt.density_activation == 'exp' else biased_softplus
@@ -66,16 +72,24 @@ class NeRFNetwork(NeRFRenderer):
             self.bg_net = None
 
     def common_forward(self, x):
-
+        print(f"common_forward x.shape {x.shape}")
+        self.plane_axes = self.plane_axes.to(x.device)
+        sampled_features = sample_from_planes(self.plane_axes, self.planes(), x.unsqueeze(0), padding_mode='zeros', box_warp=2*self.bound)
+        out = self.decoder(sampled_features)
+        # print(f"out['sigma'] {out['sigma'].grad.sum()}")
+        return out['sigma'].reshape(-1,1).float(), out['rgb'].reshape(-1,3).float()
         # sigma
-        enc = self.encoder(x, bound=self.bound, max_level=self.max_level)
+        # print(f"x.dtype {x.dtype}")
+        # enc = self.encoder(x, bound=self.bound, max_level=self.max_level)
 
-        h = self.sigma_net(enc)
+        # print(f"enc.dtype {enc.dtype}")
+        # h = self.sigma_net(enc)
 
-        sigma = self.density_activation(h[..., 0] + self.density_blob(x))
-        albedo = torch.sigmoid(h[..., 1:])
+        # print(f"h.dtype {h.dtype}")
+        # sigma = self.density_activation(h[..., 0] + self.density_blob(x))
+        # albedo = torch.sigmoid(h[..., 1:])
 
-        return sigma, albedo
+        # return sigma, albedo
     
     # ref: https://github.com/zhaofuq/Instant-NSR/blob/main/nerf/network_sdf.py#L192
     def finite_difference_normal(self, x, epsilon=1e-2):
@@ -118,13 +132,14 @@ class NeRFNetwork(NeRFRenderer):
             # normal = self.normal_net(enc)
             normal = self.normal(x)
 
-            lambertian = ratio + (1 - ratio) * (normal * l).sum(-1).clamp(min=0) # [N,]
-
+            
             if shading == 'textureless':
+                lambertian = ratio + (1 - ratio) * (normal * l).sum(-1).clamp(min=0) # [N,]
                 color = lambertian.unsqueeze(-1).repeat(1, 3)
             elif shading == 'normal':
                 color = (normal + 1) / 2
             else: # 'lambertian'
+                lambertian = ratio + (1 - ratio) * (normal * l).sum(-1).clamp(min=0) # [N,]
                 color = albedo * lambertian.unsqueeze(-1)
             
         return sigma, color, normal
@@ -156,8 +171,8 @@ class NeRFNetwork(NeRFRenderer):
     def get_params(self, lr):
 
         params = [
-            {'params': self.encoder.parameters(), 'lr': lr * 10},
-            {'params': self.sigma_net.parameters(), 'lr': lr},
+            {'params': self.planes.parameters(), 'lr': lr * 10},
+            {'params': self.decoder.parameters(), 'lr': lr},
             # {'params': self.normal_net.parameters(), 'lr': lr},
         ]        
 
@@ -170,3 +185,41 @@ class NeRFNetwork(NeRFRenderer):
             params.append({'params': self.deform, 'lr': lr})
 
         return params
+
+
+
+class OSGDecoder(torch.nn.Module):
+    def __init__(self, n_features, decoder_output_dim):
+        super().__init__()
+        self.hidden_dim = 64
+        self.decoder_output_dim = decoder_output_dim
+
+        self.net = torch.nn.Sequential(
+            nn.Linear(n_features, self.hidden_dim),
+            torch.nn.Softplus(),
+            nn.Linear(self.hidden_dim, 1 + decoder_output_dim)
+        )
+        
+    def forward(self, sampled_features):
+        # Aggregate features
+        sampled_features = sampled_features.mean(1)
+        x = sampled_features
+
+        N, M, C = x.shape
+        x = x.view(N*M, C)
+        
+        x = self.net(x)
+        x = x.view(N, M, 4)
+        rgb = torch.sigmoid(x[..., 1:])*(1 + 2*0.001) - 0.001 # Uses sigmoid clamping from MipNeRF
+        sigma = x[..., 0:1]
+        return {'rgb': rgb, 'sigma': sigma}
+
+class triplane(nn.Module):
+    def __init__(self, ) -> None:
+        super().__init__()
+        self.planes = nn.Parameter(torch.ones(1,96,128,128))
+        self.net = nn.Sequential(*([nn.Conv2d(in_channels=96, out_channels=96, kernel_size=3, padding=1),\
+                                  nn.BatchNorm2d(num_features=96),\
+                                  nn.ReLU()]*2))
+    def forward(self,):
+        return self.net(self.planes).reshape(1,3,32,128,128)

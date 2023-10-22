@@ -1,0 +1,3 @@
+CUDA_VISIBLE_DEVICES=3 python main.py --text "a hamburger" --workspace /storage/guangrun/qijia_3d_model/stable_dreamfusion/trial_grid_no_bg_10 -O --bg_radius 0 --backbone grid --W 256 --H 256 --albedo_iter_ratio 1
+CUDA_VISIBLE_DEVICES=3 python main.py --text "a hamburger" --workspace /storage/guangrun/qijia_3d_model/stable_dreamfusion/trial_grid_triplane_no_bg -O --bg_radius 0 --backbone grid_triplane --W 256 --H 256 --albedo_iter_ratio 1
+CUDA_VISIBLE_DEVICES=4 python main.py --text "a hamburger" --workspace /storage/guangrun/qijia_3d_model/stable_dreamfusion/trial_grid_mip_no_bg -O --bg_radius 0 --backbone grid_mip --W 256 --H 256 --albedo_iter_ratio 1

@@ -117,7 +117,7 @@ class NeRFNetwork(NeRFRenderer):
 
     def common_forward(self, x):
         # x: [N, 3], in [-bound, bound]
-
+        print(f"common forward x.shape {x.shape}")
         # sigma
         enc = self.encoder(x, bound=self.bound, max_level=self.max_level)
 
